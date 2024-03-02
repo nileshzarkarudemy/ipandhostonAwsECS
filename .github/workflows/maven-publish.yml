@@ -12,6 +12,7 @@ on:
 
 jobs:
   build:
+  # runs-on: ubuntu-latest .. This is all the features required to deploy the image on ECS. aws-cli etc.. so no need to have a self hosted runner...
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,12 +26,55 @@ jobs:
         distribution: 'temurin'
     - name: Build with Maven
       run: mvn clean install
-    - name: Build & push Docker image
-      uses: mr-smithers-excellent/docker-build-push@v5
+    # - name: Build & push Docker image
+    #   uses: mr-smithers-excellent/docker-build-push@v5
+    #   with:
+    #       image: nileshzarkar/ipandhostecs
+    #       tags: 1.0.0
+    #       registry: docker.io
+    #       dockerfile: Dockerfile
+    #       username: ${{ secrets.DOCKER_USERNAME }}
+    #       password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
       with:
-          image: nileshzarkar/ipandhostecs
-          tags: 1.0.0
-          registry: docker.io
-          dockerfile: Dockerfile
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: 'ap-south-1'
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+      with:
+        mask-password: 'true'
+          
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+        REPOSITORY: iphostuser
+      run: |
+          # Build a docker container and
+          # push it to ECR so that it can
+          # be deployed to ECS.
+          docker build -t $ECR_REGISTRY/$REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ipandhostusers-task-definition.json
+        container-name: iphostuser-container
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: iphostusers-service
+        cluster: iphostusers-cluster
+        wait-for-service-stability: true
